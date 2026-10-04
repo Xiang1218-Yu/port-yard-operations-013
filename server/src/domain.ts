@@ -93,7 +93,12 @@ export type ContainerInput = Omit<Container, 'lastEvent' | 'appointmentId'> & { 
 export type AppointmentInput = Pick<GateAppointment, 'containerId' | 'truckNo' | 'driver' | 'type' | 'windowStart' | 'windowEnd' | 'lane'>;
 export type TaskInput = Pick<YardTask, 'kind' | 'containerId' | 'from' | 'to' | 'priority' | 'scheduledAt' | 'estimatedMinutes'> & { equipmentId?: string };
 
-function recordAudit(action: string, entity: string, entityId: string, details: string) {
+export function snapshotProduction(): ProductionSnapshot {
+  return JSON.parse(JSON.stringify({ voyages, containers, blocks, equipment, tasks })) as ProductionSnapshot;
+}
+export interface ProductionSnapshot { voyages: Voyage[]; containers: Container[]; blocks: YardBlock[]; equipment: Equipment[]; tasks: YardTask[]; }
+
+export function recordAudit(action: string, entity: string, entityId: string, details: string) {
   auditEvents.unshift({ id: `AUD-${Date.now()}`, actor: '中控调度员', action, entity, entityId, at: new Date().toISOString(), details });
 }
 

@@ -1,6 +1,17 @@
 import express from 'express';
 import { appointments, assignTask, blocks, containerDetail, containers, createContainer, createGateAppointment, createYardTask, dashboard, deleteContainer, deleteGateAppointment, deleteYardTask, editGateAppointment, equipment, gateConflicts, prioritizeTasks, tasks, updateContainer, updateYardTask, voyages, yardHeatmap } from './domain.js';
+import { ScenarioError, bumpProductionRevision, cancelScenarioCompute, commitScenario, createScenario, deleteScenario, getScenario, listScenarios, rebaseScenario, scenarioRuntimeState, startScenarioCompute, updateScenarioAdjustments, awaitScenarioCompute } from './scenarios.js';
+
 const app = express(); app.use(express.json());
+
+/* 生产版本：任何非方案接口的成功写入（POST/PATCH/DELETE）都令全局 revision +1，
+   使推演期间发生的生产变更能在方案提交时被乐观并发控制检测到。 */
+app.use((req, res, next) => {
+  if (!['POST', 'PATCH', 'DELETE'].includes(req.method) || req.path.startsWith('/api/scenarios')) return next();
+  res.on('finish', () => { if (res.statusCode < 400) bumpProductionRevision(); });
+  next();
+});
+
 app.get('/api/dashboard', (_req, res) => res.json(dashboard()));
 app.get('/api/voyages', (_req, res) => res.json(voyages));
 app.get('/api/containers', (req, res) => res.json(req.query.status ? containers.filter(c => c.status === req.query.status) : containers));
@@ -21,5 +32,32 @@ app.post('/api/tasks', (req, res) => { try { res.status(201).json(createYardTask
 app.patch('/api/tasks/:id', (req, res) => { try { const result = updateYardTask(req.params.id, req.body); if (!result) return res.status(404).json({ message: '作业任务不存在' }); res.json(result); } catch (error) { res.status(409).json({ message: error instanceof Error ? error.message : '更新作业任务失败' }); } });
 app.delete('/api/tasks/:id', (req, res) => { const result = deleteYardTask(req.params.id); if (!result) return res.status(404).json({ message: '作业任务不存在' }); res.json({ deleted: true, id: result.id }); });
 app.patch('/api/tasks/:id/assign', (req, res) => { const result = assignTask(req.params.id, req.body.equipmentId); if (!result) return res.status(404).json({ message: '任务或设备不存在' }); res.json(result); });
+
+/* ---------------- 航次作业情景推演 ---------------- */
+function scenarioError(res: express.Response, error: unknown) {
+  if (error instanceof ScenarioError) return res.status(error.status).json({ message: error.message, code: error.code, report: error.report });
+  console.error(error);
+  return res.status(500).json({ message: '情景推演服务内部错误' });
+}
+app.get('/api/scenarios/state', (_req, res) => { try { res.json(scenarioRuntimeState()); } catch (error) { scenarioError(res, error); } });
+app.get('/api/scenarios', (_req, res) => { try { res.json(listScenarios()); } catch (error) { scenarioError(res, error); } });
+app.post('/api/scenarios', (req, res) => { try { res.status(201).json(createScenario(req.body)); } catch (error) { scenarioError(res, error); } });
+app.get('/api/scenarios/:id', (req, res) => { try { res.json(getScenario(req.params.id)); } catch (error) { scenarioError(res, error); } });
+app.patch('/api/scenarios/:id', (req, res) => { try { res.json(updateScenarioAdjustments(req.params.id, req.body)); } catch (error) { scenarioError(res, error); } });
+app.delete('/api/scenarios/:id', (req, res) => { try { res.json(deleteScenario(req.params.id)); } catch (error) { scenarioError(res, error); } });
+app.post('/api/scenarios/:id/compute', async (req, res) => {
+  try {
+    const stepDelayMs = Number(req.body?.stepDelayMs ?? 0) || 0;
+    const scenario = startScenarioCompute(req.params.id, { stepDelayMs });
+    if (req.body?.await !== false) await awaitScenarioCompute(scenario.id);
+    res.json(getScenario(scenario.id));
+  } catch (error) { scenarioError(res, error); }
+});
+app.post('/api/scenarios/:id/cancel', (req, res) => { try { res.json(cancelScenarioCompute(req.params.id)); } catch (error) { scenarioError(res, error); } });
+app.post('/api/scenarios/:id/commit', async (req, res) => {
+  try { res.json(await commitScenario(req.params.id)); } catch (error) { scenarioError(res, error); }
+});
+app.post('/api/scenarios/:id/rebase', (req, res) => { try { res.json(rebaseScenario(req.params.id)); } catch (error) { scenarioError(res, error); } });
+
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'port-yard-operations' }));
 const port = Number(process.env.PORT || 4107); app.listen(port, () => console.log(`port yard API listening on ${port}`));
